@@ -1,11 +1,12 @@
-name: Sync Upstream
+name: Universal Sync Upstream
 
 on:
   schedule:
-    # 每天 UTC 时间 0:00 (北京时间 8:00) 自动运行
     - cron: '0 0 * * *'
-  # 支持在 GitHub Actions 页面手动触发
   workflow_dispatch:
+
+env:
+  UPSTREAM_REPO: 'morluto/rea' # 仅需填写上游仓库地址
 
 jobs:
   sync:
@@ -17,22 +18,22 @@ jobs:
       - name: Checkout target repo
         uses: actions/checkout@v4
         with:
-          ref: master
-          fetch-depth: 0 # 完整拉取历史记录，确保能够平滑合并
+          fetch-depth: 0
 
-      - name: Sync upstream changes via Git
+      - name: Detect branch and sync
         run: |
-          # 配置 Git 提交身份
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
 
-          # 添加上游仓库地址并拉取 master 分支
-          git remote add upstream https://github.com/CYQawa/YunX.git
-          git fetch upstream master
+          # 自动获取本地当前检出的分支名（不管是 master 还是 main）
+          DEFAULT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+          echo "当前仓库默认分支为: $DEFAULT_BRANCH"
 
-          # 切换到 master 并合并上游分支
-          git checkout master
-          git merge upstream/master --no-edit
+          # 添加上游并拉取对应分支
+          git remote add upstream "https://github.com/${{ env.UPSTREAM_REPO }}.git"
+          git fetch upstream "$DEFAULT_BRANCH"
 
-          # 推送最新代码到你自己的仓库
-          git push origin master
+          # 合并并推送
+          git checkout "$DEFAULT_BRANCH"
+          git merge "upstream/$DEFAULT_BRANCH" --no-edit
+          git push origin "$DEFAULT_BRANCH"
