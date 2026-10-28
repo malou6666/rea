@@ -2,7 +2,9 @@ name: Universal Sync Upstream
 
 on:
   schedule:
+    # 每天 UTC 0:00 (北京时间 8:00) 自动运行
     - cron: '0 0 * * *'
+  # 支持在 GitHub Actions 页面手动点击触发
   workflow_dispatch:
 
 env:
@@ -11,13 +13,13 @@ env:
 jobs:
   sync:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
 
     steps:
       - name: Checkout target repo
         uses: actions/checkout@v4
         with:
+          # 关键点：使用生成的 Personal Access Token 替代系统默认 Token
+          token: ${{ secrets.PERSONAL_TOKEN }}
           fetch-depth: 0
 
       - name: Detect branch and sync
@@ -25,24 +27,17 @@ jobs:
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
 
+          # 自动获取本地当前检出的默认分支名
           DEFAULT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
           echo "当前仓库默认分支为: $DEFAULT_BRANCH"
 
-          # 1. 添加上游并拉取
+          # 添加上游仓库并拉取
           git remote add upstream "https://github.com/${{ env.UPSTREAM_REPO }}.git"
           git fetch upstream "$DEFAULT_BRANCH"
 
-          # 2. 合并上游代码（允许冲突/工作流修改）
+          # 切换分支并合并上游改动
           git checkout "$DEFAULT_BRANCH"
-          git merge "upstream/$DEFAULT_BRANCH" --no-edit || true
+          git merge "upstream/$DEFAULT_BRANCH" --no-edit
 
-          # 3. 关键步骤：还原 .github/workflows/ 目录，防止触发系统的修改工作流拦截
-          git checkout HEAD -- .github/workflows/
-
-          # 4. 如果有未提交的暂存改动，自动完成 commit
-          if ! git diff-index --quiet HEAD --; then
-            git commit -m "sync: upstream changes (excluding workflow files)"
-          fi
-
-          # 5. 推送到 origin
+          # 推送到当前仓库（PAT Token 会赋予完整的 Push 与 Workflow 修改权限）
           git push origin "$DEFAULT_BRANCH"
