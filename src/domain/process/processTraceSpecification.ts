@@ -9,20 +9,29 @@ import {
   processObservationSourceSchema,
 } from "./processObservation.js";
 
-const identifierSchema = z.string().regex(IDENTIFIER_PATTERN);
+/**
+ * A declared trace, event or variant identifier. The specification owns this
+ * vocabulary and the comparison result echoes those identifiers verbatim, so
+ * the result module must reuse this schema rather than restate the pattern:
+ * two bounds on the same identifier would reject the result of an accepted
+ * specification.
+ */
+export const processTraceIdentifierSchema = z
+  .string()
+  .regex(IDENTIFIER_PATTERN);
 
 const cardinalitySchema = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("required") }),
   z.strictObject({ kind: z.literal("optional") }),
   z.strictObject({
     kind: z.literal("exact"),
-    count: z.number().int().min(0),
+    count: z.int().min(0),
   }),
   z
     .strictObject({
       kind: z.literal("range"),
-      min: z.number().int().min(0),
-      max: z.number().int().min(0),
+      min: z.int().min(0),
+      max: z.int().min(0),
     })
     .refine(({ min, max }) => min <= max, {
       message: "cardinality min must not exceed max",
@@ -31,7 +40,7 @@ const cardinalitySchema = z.discriminatedUnion("kind", [
 ]);
 
 const eventDeclarationSchema = z.strictObject({
-  id: identifierSchema,
+  id: processTraceIdentifierSchema,
   source: processObservationSourceSchema,
   exact: jsonValueSchema,
   ignore_fields: z
@@ -56,29 +65,31 @@ const partialOrderLanguageSchema = z.strictObject({
   happens_before: z
     .array(
       z.strictObject({
-        before: identifierSchema,
-        after: identifierSchema,
+        before: processTraceIdentifierSchema,
+        after: processTraceIdentifierSchema,
       }),
     )
     .default([]),
   not_before: z
     .array(
       z.strictObject({
-        event: identifierSchema,
-        anchor: identifierSchema,
+        event: processTraceIdentifierSchema,
+        anchor: processTraceIdentifierSchema,
       }),
     )
     .default([]),
   unordered_groups: z
-    .array(z.strictObject({ events: z.array(identifierSchema).min(2) }))
+    .array(
+      z.strictObject({ events: z.array(processTraceIdentifierSchema).min(2) }),
+    )
     .default([]),
-  prefix: z.array(identifierSchema).default([]),
-  suffix: z.array(identifierSchema).default([]),
+  prefix: z.array(processTraceIdentifierSchema).default([]),
+  suffix: z.array(processTraceIdentifierSchema).default([]),
 });
 
 const finiteTraceTokenSchema = z.union([
-  identifierSchema,
-  z.strictObject({ unordered: z.array(identifierSchema).min(2) }),
+  processTraceIdentifierSchema,
+  z.strictObject({ unordered: z.array(processTraceIdentifierSchema).min(2) }),
 ]);
 
 const finiteTraceLanguageSchema = z.strictObject({
@@ -86,7 +97,7 @@ const finiteTraceLanguageSchema = z.strictObject({
   variants: z
     .array(
       z.strictObject({
-        id: identifierSchema,
+        id: processTraceIdentifierSchema,
         trace: z.array(finiteTraceTokenSchema),
       }),
     )
@@ -541,6 +552,22 @@ const countVariantEvents = (
   return counts;
 };
 
+/**
+ * Keys a finite trace by the observations it accepts. Matching treats each
+ * unordered token as a multiset, so its member order is not significant and a
+ * token that repeats one event accepts only that event's sequence.
+ */
+const finiteTraceKey = (
+  trace: readonly (string | { readonly unordered: readonly string[] })[],
+): string =>
+  canonicalTraceJson(
+    trace.flatMap((token): (string | readonly string[])[] => {
+      if (typeof token === "string") return [token];
+      const members = [...token.unordered].sort();
+      return members[0] === members.at(-1) ? members : [members];
+    }),
+  );
+
 const validateFiniteTraces = (
   specification: ProcessTraceSpecification,
   context: z.RefinementCtx,
@@ -561,14 +588,14 @@ const validateFiniteTraces = (
         path: [...variantPath, "id"],
       });
     variantIds.add(variant.id);
-    const canonicalTrace = canonicalTraceJson(variant.trace);
-    if (variantTraces.has(canonicalTrace))
+    const traceKey = finiteTraceKey(variant.trace);
+    if (variantTraces.has(traceKey))
       context.addIssue({
         code: "custom",
         message: "finite trace variants must not duplicate a trace",
         path: [...variantPath, "trace"],
       });
-    variantTraces.add(canonicalTrace);
+    variantTraces.add(traceKey);
     for (const [tokenIndex, token] of variant.trace.entries()) {
       const values = typeof token === "string" ? [token] : token.unordered;
       for (const [eventIndex, id] of values.entries())
