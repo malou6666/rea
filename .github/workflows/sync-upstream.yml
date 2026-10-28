@@ -13,7 +13,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      actions: write
 
     steps:
       - name: Checkout target repo
@@ -26,15 +25,24 @@ jobs:
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
 
-          # 自动获取本地当前检出的分支名（不管是 master 还是 main）
           DEFAULT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
           echo "当前仓库默认分支为: $DEFAULT_BRANCH"
 
-          # 添加上游并拉取对应分支
+          # 1. 添加上游并拉取
           git remote add upstream "https://github.com/${{ env.UPSTREAM_REPO }}.git"
           git fetch upstream "$DEFAULT_BRANCH"
 
-          # 合并并推送
+          # 2. 合并上游代码（允许冲突/工作流修改）
           git checkout "$DEFAULT_BRANCH"
-          git merge "upstream/$DEFAULT_BRANCH" --no-edit
+          git merge "upstream/$DEFAULT_BRANCH" --no-edit || true
+
+          # 3. 关键步骤：还原 .github/workflows/ 目录，防止触发系统的修改工作流拦截
+          git checkout HEAD -- .github/workflows/
+
+          # 4. 如果有未提交的暂存改动，自动完成 commit
+          if ! git diff-index --quiet HEAD --; then
+            git commit -m "sync: upstream changes (excluding workflow files)"
+          fi
+
+          # 5. 推送到 origin
           git push origin "$DEFAULT_BRANCH"
