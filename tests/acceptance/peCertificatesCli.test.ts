@@ -8,6 +8,7 @@ import {
   pkcs7SignedDataFixture,
   pkcs7SignedDataIndefiniteEnvelopeFixture,
 } from "../../src/native/pe/PeCertificates.fixture.js";
+import { repeatedCertificateSignedData } from "../fixtures/peCertificateAllowance.js";
 import { createTestTempDirectory } from "../fixtures/temporaryDirectory.js";
 import { cliTest } from "../support/cli/cliFixture.js";
 
@@ -139,5 +140,117 @@ cliTest(
       code: "invalid_request",
       details: { operation: "inspect_pe_certificates" },
     });
+  },
+);
+
+cliTest(
+  "rejects surrogate pairs in BMPString certificate names and accepts valid neighboring code units",
+  async ({ cli }) => {
+    const root = await createTestTempDirectory("rea-pe-cert-cli-bmp-");
+    const path = join(root, "bmp.exe");
+    const payload = pkcs7SignedDataFixture("ABCD");
+    const nameAt = payload.indexOf(
+      Buffer.from([0x0c, 0x04, 0x41, 0x42, 0x43, 0x44]),
+    );
+    expect(nameAt).toBeGreaterThanOrEqual(0);
+    // Equal-size replacement keeps the DER lengths and all unrelated fields intact.
+    Buffer.from([0x1e, 0x04, 0xd8, 0, 0xdc, 0]).copy(payload, nameAt);
+    await writeFile(path, peCertificateFixture(false, payload));
+    const invalid = await cli.run({
+      arguments: ["inspect-pe-certificates", path, "--json"],
+    });
+    expect(invalid.exitCode).toBe(1);
+    expect(invalid.json).toMatchObject({
+      code: "invalid_request",
+      details: { operation: "inspect_pe_certificates" },
+    });
+    Buffer.from([0x1e, 0x04, 0xd7, 0xff, 0xe0, 0]).copy(payload, nameAt);
+    await writeFile(path, peCertificateFixture(false, payload));
+    const valid = await cli.run({
+      arguments: ["inspect-pe-certificates", path, "--json"],
+    });
+    expect(valid.exitCode, valid.stderr).toBe(0);
+    const evidence = toolContract("inspect_pe_certificates").outputSchema.parse(
+      valid.json,
+    );
+    expect(
+      evidence.normalized_result.entries[0]?.pkcs7?.certificates[0]?.issuer
+        .text,
+    ).toBe("commonName=\ud7ff\ue000, organizationName=REA Tests");
+  },
+);
+
+cliTest(
+  "inventories repeated certificates within both decoder allowances",
+  async ({ cli }) => {
+    const root = await createTestTempDirectory("rea-pe-cert-cli-repeated-");
+    const path = join(root, "chain.exe");
+    await writeFile(
+      path,
+      peCertificateFixture(false, repeatedCertificateSignedData(200)),
+    );
+
+    const result = await cli.run({
+      arguments: ["inspect-pe-certificates", path, "--json"],
+    });
+
+    expect(result.exitCode, result.stderr).toBe(0);
+    const evidence = toolContract("inspect_pe_certificates").outputSchema.parse(
+      result.json,
+    );
+    expect(
+      evidence.normalized_result.entries[0]?.pkcs7?.certificates,
+    ).toHaveLength(200);
+  },
+);
+
+cliTest.for([
+  // Each repeated certificate decodes to 43 ASN.1 values and about 200 bytes
+  // of text, so 350 stay within the value allowance and exceed the text one.
+  {
+    allowance: "decoded certificate text",
+    certificates: 350,
+    limits: { max_decoded_text_bytes: 65_536 },
+    message: "65536-byte decoded budget",
+  },
+  {
+    allowance: "ASN.1 value count",
+    certificates: 600,
+    limits: { max_asn1_values: 16_384 },
+    message: "16384-node budget",
+  },
+])(
+  "reports the fixed $allowance allowance as a resource constraint",
+  async ({ certificates, limits, message }, { cli }) => {
+    const root = await createTestTempDirectory("rea-pe-cert-cli-allowance-");
+    const path = join(root, "large.exe");
+    await writeFile(
+      path,
+      peCertificateFixture(false, repeatedCertificateSignedData(certificates)),
+    );
+
+    const result = await cli.run({
+      arguments: ["inspect-pe-certificates", path, "--json"],
+    });
+
+    expect(result.exitCode).toBe(1);
+    expect(result.json).toMatchObject({
+      code: "resource_constraint",
+      retryable: false,
+      details: {
+        operation: "inspect_pe_certificates",
+        reported_limits: limits,
+      },
+    });
+    const { message: reason, remediation } = result.json as {
+      message: string;
+      remediation: { action: string };
+    };
+    expect(reason).toContain(message);
+    expect(remediation.action).toContain(String(Object.values(limits)[0]));
+    expect(remediation.action).toContain("no runtime override");
+    expect(remediation.action).toContain(
+      "Repeating the unchanged request fails the same way",
+    );
   },
 );
